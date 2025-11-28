@@ -18,8 +18,19 @@ from transformers import pipeline as hf_pipeline
 import warnings
 from sentence_transformers import SentenceTransformer
 from flask import Flask, request, jsonify
-from queue import Queue
+from queue import Queue, Empty
 import threading
+import requests
+import platform
+
+# Detect macOS
+if platform.system() == "Darwin":
+    print("Detected macOS → setting FAISS to single-thread mode for stability")
+    os.environ["OMP_NUM_THREADS"] = "1"
+    try:
+        faiss.omp_set_num_threads(1)
+    except Exception:
+        pass
 
 # Read environment variables
 TOTAL_NODES = int(os.environ.get('TOTAL_NODES', 1))
@@ -27,8 +38,11 @@ NODE_NUMBER = int(os.environ.get('NODE_NUMBER', 0))
 NODE_0_IP = os.environ.get('NODE_0_IP', 'localhost:8000')
 NODE_1_IP = os.environ.get('NODE_1_IP', 'localhost:8000')
 NODE_2_IP = os.environ.get('NODE_2_IP', 'localhost:8000')
+WORKERS = [NODE_0_IP, NODE_1_IP, NODE_2_IP]
 FAISS_INDEX_PATH = os.environ.get('FAISS_INDEX_PATH', 'faiss_index.bin')
 DOCUMENTS_DIR = os.environ.get('DOCUMENTS_DIR', 'documents/')
+BATCH_SIZE = int(os.environ.get("BATCH_SIZE", 4)) 
+BATCH_WAIT_SECONDS = os.environ.get("BATCH_WAIT_SECONDS", 0.05)
 
 # Configuration
 CONFIG = {
@@ -47,6 +61,9 @@ app = Flask(__name__)
 request_queue = Queue()
 results = {}
 results_lock = threading.Lock()
+
+# Worker Counter
+worker_counter = 0
 
 @dataclass
 class PipelineRequest:
@@ -69,7 +86,15 @@ class MonolithicPipeline:
     """
     
     def __init__(self):
-        self.device = torch.device('cpu')
+        # adding metal and cuda support
+        if torch.backends.mps.is_available():
+            device = torch.device("mps")
+        elif torch.cuda.is_available():
+            device = torch.device("cuda")
+        else:
+            device = torch.device("cpu")
+        self.device = device
+        # self.device = torch.device("cpu")
         print(f"Initializing pipeline on {self.device}")
         print(f"Node {NODE_NUMBER}/{TOTAL_NODES}")
         print(f"FAISS index path: {CONFIG['faiss_index_path']}")
@@ -81,6 +106,8 @@ class MonolithicPipeline:
         self.llm_model_name = 'Qwen/Qwen2.5-0.5B-Instruct'
         self.sentiment_model_name = 'nlptown/bert-base-multilingual-uncased-sentiment'
         self.safety_model_name = 'unitary/toxic-bert'
+        print("Loading FAISS index into memory once for this process...")
+        self.faiss_index = faiss.read_index(CONFIG['faiss_index_path'])
     
     def process_request(self, request: PipelineRequest) -> PipelineResponse:
         """
@@ -173,13 +200,16 @@ class MonolithicPipeline:
         if not os.path.exists(CONFIG['faiss_index_path']):
             raise FileNotFoundError("FAISS index not found. Please create the index before running the pipeline.")
         
-        print("Loading FAISS index")
-        index = faiss.read_index(CONFIG['faiss_index_path'])
+        # print("Loading FAISS index")
+        # index = faiss.read_index(CONFIG['faiss_index_path'])
         query_embeddings = query_embeddings.astype('float32')
-        _, indices = index.search(query_embeddings, CONFIG['retrieval_k'])
-        del index
-        gc.collect()
+        # _, indices = index.search(query_embeddings, CONFIG['retrieval_k'])
+        # del index
+        # gc.collect()
+        _, indices = self.faiss_index.search(query_embeddings, CONFIG["retrieval_k"])
         return [row.tolist() for row in indices]
+        
+
     
     def _fetch_documents_batch(self, doc_id_batches: List[List[int]]) -> List[List[Dict]]:
         """Step 4: Fetch documents for each query in the batch using SQLite"""
@@ -313,43 +343,164 @@ class MonolithicPipeline:
 # Global pipeline instance
 pipeline = None
 
-def process_requests_worker():
+def worker_dispatcher():
+    """
+    Continuously:
+      - pull up to BATCH_SIZE requests from request_queue
+      - send them as a batch to a worker via HTTP (round-robin)
+      - store the results in `results` dict
+    """
+    global worker_counter
+    while True:
+        # Block until at least 1 request is available
+        req = request_queue.get()
+        if req is None:  # shutdown signal if you want one
+            break
+
+        batch = [req]
+
+        # Try to grab up to BATCH_SIZE-1 more without blocking too long
+        batch_deadline = time.time() + BATCH_WAIT_SECONDS
+        while len(batch) < BATCH_SIZE:
+            remaining = batch_deadline - time.time()
+            if remaining <= 0:
+                break
+            try:
+                # Wait a tiny bit for more requests to form a fuller batch
+                more_req = request_queue.get(timeout=remaining)
+                if more_req is None:
+                    # push back the sentinel for other threads and stop
+                    request_queue.put(None)
+                    break
+                batch.append(more_req)
+            except Empty:
+                break
+
+        # Choose worker in round-robin, **per batch**
+        worker_index = worker_counter % len(WORKERS)
+        worker_counter += 1
+        worker_url = WORKERS[worker_index]
+        print("Using worker", worker_index)
+
+        payload = {
+            "requests": [
+                {"request_id": r["request_id"], "query": r["query"]}
+                for r in batch
+            ]
+        }
+
+        try:
+            resp = requests.post(
+                f"http://{worker_url}/process",
+                json=payload,
+                timeout=300,
+            )
+            resp.raise_for_status()
+            resp_json = resp.json()
+            responses = resp_json.get("responses", [])
+            # Fan results back to waiting /query calls
+            with results_lock:
+                for res in responses:
+                    results[res['request_id']] = {
+                        'request_id': res['request_id'],
+                        'generated_response': res['generated_response'],
+                        'sentiment': res['sentiment'],
+                        'is_toxic': res['is_toxic']
+                    }
+        except Exception as e:
+            # On error, create error results for each request in the batch
+            # responses = [
+            #     {
+            #         "request_id": r["request_id"],
+            #         "error": f"Worker call failed: {e}",
+            #     }
+            #     for r in batch
+            # ]
+            for _ in batch:
+                print(f"Error processing request: {e}")
+       
+
+        
+
+        # Mark all batch items as done
+        for _ in batch:
+            request_queue.task_done()
+
+
+# def process_requests_worker():
+#     """Worker thread that processes requests from the queue"""
+#     global pipeline
+#     while True:
+#         try:
+#             request_data = request_queue.get()
+#             if request_data is None:  # Shutdown signal
+#                 break
+            
+#             # Create request object
+#             req = PipelineRequest(
+#                 request_id=request_data['request_id'],
+#                 query=request_data['query'],
+#                 timestamp=time.time()
+#             )
+            
+#             # Process request
+#             response = pipeline.process_request(req)
+            
+#             # Store result
+#             with results_lock:
+#                 results[request_data['request_id']] = {
+#                     'request_id': response.request_id,
+#                     'generated_response': response.generated_response,
+#                     'sentiment': response.sentiment,
+#                     'is_toxic': response.is_toxic
+#                 }
+            
+#             request_queue.task_done()
+#         except Exception as e:
+#             print(f"Error processing request: {e}")
+#             request_queue.task_done()
+
+
+
+@app.route('/process', methods=['POST'])
+def process_requests():
     """Worker thread that processes requests from the queue"""
     global pipeline
-    while True:
-        try:
-            request_data = request_queue.get()
-            if request_data is None:  # Shutdown signal
-                break
-            
-            # Create request object
-            req = PipelineRequest(
-                request_id=request_data['request_id'],
-                query=request_data['query'],
-                timestamp=time.time()
-            )
-            
-            # Process request
-            response = pipeline.process_request(req)
-            
-            # Store result
-            with results_lock:
-                results[request_data['request_id']] = {
-                    'request_id': response.request_id,
-                    'generated_response': response.generated_response,
-                    'sentiment': response.sentiment,
-                    'is_toxic': response.is_toxic
-                }
-            
-            request_queue.task_done()
-        except Exception as e:
-            print(f"Error processing request: {e}")
-            request_queue.task_done()
+    
+    data = request.json
+    reqs_data = data.get('requests', [])
+
+    # Create PipelineRequest objects
+    reqs = [
+        PipelineRequest(
+            request_id=r['request_id'],
+            query=r['query'],
+            timestamp=time.time()
+        )
+        for r in reqs_data
+    ]
+    
+    # Process request
+    responses = pipeline.process_batch(reqs)
+
+    # Convert PipelineResponse objects to dictionaries
+    out = []
+    for resp in responses:
+        out.append({
+            "request_id": resp.request_id,
+            "generated_response": resp.generated_response,
+            "sentiment": resp.sentiment,
+            "is_toxic": resp.is_toxic,
+        })
+
+    return jsonify({"responses": out})
+    
 
 
 @app.route('/query', methods=['POST'])
 def handle_query():
     """Handle incoming query requests"""
+    # global worker_counter
     try:
         data = request.json
         request_id = data.get('request_id')
@@ -372,6 +523,15 @@ def handle_query():
 
         # Wait for processing (with timeout). Very inefficient - would suggest using a more efficient waiting and timeout mechanism.
         timeout = 300  # 5 minutes
+
+        # worker_url = WORKERS[worker_counter%3]
+        # worker_counter += 1
+
+        # worker_resp = requests.post(worker_url + "/process", json=data, timeout=timeout )
+        # worker_resp.raise_for_status()
+        # return jsonify(worker_resp.json()), 200
+
+        # busy waits until the request is processed
         start_wait = time.time()
         while True:
             with results_lock:
@@ -405,12 +565,11 @@ def main():
     global pipeline
     
     print("="*60)
-    print("MONOLITHIC CUSTOMER SUPPORT PIPELINE")
+    print("3 NODES MONOLITHIC CUSTOMER SUPPORT PIPELINE")
     print("="*60)
     print(f"\nRunning on Node {NODE_NUMBER} of {TOTAL_NODES} nodes")
     print(f"Node IPs: 0={NODE_0_IP}, 1={NODE_1_IP}, 2={NODE_2_IP}")
-    print("\nNOTE: This implementation is deliberately inefficient.")
-    print("Your task is to optimize this for a 3-node cluster.\n")
+    print("\nNOTE: This is the basic implementation.")
     
     # Initialize pipeline
     print("Initializing pipeline...")
@@ -418,16 +577,23 @@ def main():
     print("Pipeline initialized!")
     
     # Start worker thread
-    worker_thread = threading.Thread(target=process_requests_worker, daemon=True)
+    worker_thread = threading.Thread(target=worker_dispatcher, daemon=True) #idk what daemon is, hopefully not important
     worker_thread.start()
     print("Worker thread started!")
     
-    # Start Flask server
-    print(f"\nStarting Flask server")
-    hostname = NODE_0_IP.split(':')[0]
-    port = int(NODE_0_IP.split(':')[1]) if ':' in NODE_0_IP else 8000
-    app.run(host=hostname, port=port, threaded=True)
+    # Pick correct host:port for this node
+    if NODE_NUMBER == 0:
+        hostport = NODE_0_IP
+    elif NODE_NUMBER == 1:
+        hostport = NODE_1_IP
+    else:
+        hostport = NODE_2_IP
 
+    hostname = hostport.split(':')[0]
+    port = int(hostport.split(':')[1]) if ':' in hostport else 8000
+
+    print(f"\nStarting Flask server on {hostname}:{port}")
+    app.run(host=hostname, port=port, threaded=True)
 
 if __name__ == "__main__":
     main()

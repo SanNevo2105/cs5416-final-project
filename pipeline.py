@@ -42,7 +42,7 @@ WORKERS = [NODE_0_IP, NODE_1_IP, NODE_2_IP]
 FAISS_INDEX_PATH = os.environ.get('FAISS_INDEX_PATH', 'faiss_index.bin')
 DOCUMENTS_DIR = os.environ.get('DOCUMENTS_DIR', 'documents/')
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", 4)) 
-BATCH_WAIT_SECONDS = os.environ.get("BATCH_WAIT_SECONDS", 0.05)
+BATCH_WAIT_SECONDS = os.environ.get("BATCH_WAIT_SECONDS", 10)
 
 # Configuration
 CONFIG = {
@@ -64,6 +64,7 @@ results_lock = threading.Lock()
 
 # Worker Counter
 worker_counter = 0
+worker_counter_lock = threading.Lock()
 
 @dataclass
 class PipelineRequest:
@@ -377,8 +378,9 @@ def worker_dispatcher():
                 break
 
         # Choose worker in round-robin, **per batch**
-        worker_index = worker_counter % len(WORKERS)
-        worker_counter += 1
+        with worker_counter_lock:
+            worker_index = worker_counter % len(WORKERS)
+            worker_counter += 1
         worker_url = WORKERS[worker_index]
         print("Using worker", worker_index)
 
@@ -577,9 +579,16 @@ def main():
     print("Pipeline initialized!")
     
     # Start worker thread
-    worker_thread = threading.Thread(target=worker_dispatcher, daemon=True) #idk what daemon is, hopefully not important
-    worker_thread.start()
-    print("Worker thread started!")
+    # worker_thread = threading.Thread(target=worker_dispatcher, daemon=True) #idk what daemon is, hopefully not important
+    # worker_thread.start()
+    # print("Worker thread started!")
+    if NODE_NUMBER == 0:
+        for i in range(TOTAL_NODES):
+            t = threading.Thread(target=worker_dispatcher, daemon=True)
+            t.start()
+        print(f"Started {TOTAL_NODES} dispatcher threads on router node")
+    else:
+        print("Worker node; not starting dispatcher thread")
     
     # Pick correct host:port for this node
     if NODE_NUMBER == 0:

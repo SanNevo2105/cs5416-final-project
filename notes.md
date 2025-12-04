@@ -10,31 +10,37 @@ Command used to run node 0: TOTAL_NODES=3 NODE_NUMBER=0 \
 NODE_0_IP=127.0.0.1:5000 \
 NODE_1_IP=127.0.0.1:5001 \
 NODE_2_IP=127.0.0.1:5002 \
-mprof run ./run.sh
+BATCH_SIZE=4 \
+BATCH_WAIT_SECONDS=1 \
+mprof run -o node0.dat python3 pipeline.py
 
-Command used to run node 1: TOTAL_NODES=3 NODE_NUMBER=1 \         
+Command used to run node 1: TOTAL_NODES=3 NODE_NUMBER=1 \
 NODE_0_IP=127.0.0.1:5000 \
 NODE_1_IP=127.0.0.1:5001 \
 NODE_2_IP=127.0.0.1:5002 \
-mprof run ./run.sh
+BATCH_SIZE=4 \
+BATCH_WAIT_SECONDS=1 \
+mprof run -o node0.dat python3 pipeline.py
 
-Command used to run node 2: TOTAL_NODES=3 NODE_NUMBER=2 \         
+Command used to run node 2: TOTAL_NODES=3 NODE_NUMBER=2 \
 NODE_0_IP=127.0.0.1:5000 \
 NODE_1_IP=127.0.0.1:5001 \
 NODE_2_IP=127.0.0.1:5002 \
-mprof run ./run.sh
+BATCH_SIZE=4 \
+BATCH_WAIT_SECONDS=1 \
+mprof run -o node0.dat python3 pipeline.py
 
 Command used to run client: NODE_0_IP=127.0.0.1:5000 python3 client.py
 Batch size used: 4
 
-Node 0 peak on given client.py: mprofile_20251127184725.dat       1.641 MiB
-![Node_0_memory_usage_graph](./figures/node0_memory_usage.png)
-Node 1 peak on given client.py: mprofile_20251127184737.dat       1.641 MiB
-![Node_1_memory_usage_graph](./figures/node1_memory_usage.png)
-Node 2 peak on given client.py: mprofile_20251127184741.dat       1.906 MiB
-![Node_2_memory_usage_graph](./figures/node2_memory_usage.png)
+Node 0 peak on given client.py: node0.dat      14046.844 MiB = 13.718 GiB
+![node0_mprof_clientpy](./figures/node0_mprof_clientpy.png)
+Node 1 peak on given client.py: node1.dat      14086.578 MiB = 13.756 GiB
+![node1_mprof_clientpy](./figures/node1_mprof_clientpy.png)
+Node 2 peak on given client.py: node0.dat      14355.453 MiB = 14.019 GiB
+![node2_mprof_clientpy](./figures/node2_mprof_clientpy.png)
 
-Benchmark results
+Benchmark results (Not updated yet)
 
 batch_size=4
     Command used    : NODE_0_IP=127.0.0.1:5000 \python3 bench_client.py --num-requests 100 --concurrency 8 --label "batch_size=4"

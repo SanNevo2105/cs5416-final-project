@@ -98,6 +98,7 @@ def run_benchmark(
             print("[Warm-up] WARNING: warm-up request failed; benchmark may be meaningless")
 
     # Actual benchmark
+    print("\nRunning benchmark...")
     latencies: List[float] = []
     successes = 0
 

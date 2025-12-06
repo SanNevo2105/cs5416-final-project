@@ -7,10 +7,10 @@ Microservices on node2:
 - toxicity detection
 """
 import json
+import multiprocessing
 import time
 from flask import Flask, request, jsonify
-from queue import Queue, Empty
-import threading
+from queue import Empty
 import requests
 from dataclasses import asdict
 
@@ -25,24 +25,26 @@ from service import LLM_sentiment_toxicity
 app = Flask(__name__)
 
 # Request queue 
-request_queue = Queue()
+request_queue = multiprocessing.Queue()
 
-# multithreading on node2
-# number of worker threads to run node2 services
-THREADS = 3               # TRY DIFFERENT NUMBER OF THREADS!
+# multiprocessing on node2
+# number of worker processes to run node2 services
+PROCESSES = 2               # TRY DIFFERENT NUMBER OF PROCESSES!
 
 # Node2 pipeline
 pipeline = None
 
 def worker():
     """
-    worker thread function
+    worker function
 
     Continuously:
       - pull up to BATCH_SIZE requests from request_queue
       - do node 2 services
       - send result to node 0 to complete the pipeline
     """
+    pipeline = LLM_sentiment_toxicity()
+
     while True:
         # Block until at least 1 request is available
         req = request_queue.get()
@@ -62,7 +64,7 @@ def worker():
                 # Wait a tiny bit for more requests to form a fuller batch
                 more_req = request_queue.get(timeout=remaining)
                 if more_req is None:
-                    # push back the sentinel for other threads and stop
+                    # push back the sentinel for other processes and stop
                     request_queue.put(None)
                     break
                 batch.append(more_req)
@@ -91,10 +93,6 @@ def worker():
         except Exception as e:
             for _ in batch:
                 print(f"Error processing request: {e}")
-       
-        # Mark all batch items as done
-        for _ in batch:
-            request_queue.task_done()
 
 
 @app.route('/query', methods=['POST'])
@@ -140,15 +138,11 @@ def main():
     print(f"\nRunning on Node {NODE_NUMBER} of {TOTAL_NODES} nodes")
     print(f"Node IPs: 0={NODE_0_IP}, 1={NODE_1_IP}, 2={NODE_2_IP}")
 
-    print("Initializing pipeline...")
-    pipeline = LLM_sentiment_toxicity()
-    print("Pipeline initialized!")
-
-    # Start worker thread
-    for i in range(THREADS):
-        t = threading.Thread(target=worker, daemon=True)
+    # Start worker process
+    for i in range(PROCESSES):
+        t = multiprocessing.Process(target=worker, daemon=True)
         t.start()
-    print(f"Started {THREADS} worker threads")
+    print(f"Started {PROCESSES} worker processes")
 
     hostport = NODE_2_IP
 

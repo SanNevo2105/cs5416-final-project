@@ -3,5 +3,35 @@
 # Run script for ML Inference Pipeline
 # This script will be executed on each node
 
-echo "Starting pipeline on Node $NODE_NUMBER..."
-python3 pipeline.py
+# You must provide the following environment variables:
+# TOTAL_NODES
+# NODE_NUMBER
+# NODE_0_IP
+# NODE_1_IP
+# NODE_2_IP
+# FAISS_INDEX_PATH
+# DOCUMENTS_DIR
+
+# if NODE_NUMBER is 0, launch node0.py
+if [ "$NODE_NUMBER" -eq 0 ]; then
+    echo "Starting pipeline on Node $NODE_NUMBER..."
+    BATCH_SIZE=4  
+    BATCH_WAIT_SECONDS=10
+    TOTAL_NODES=$TOTAL_NODES NODE_NUMBER=$NODE_NUMBER NODE_0_IP=$NODE_0_IP NODE_1_IP=$NODE_1_IP NODE_2_IP=$NODE_2_IP FAISS_INDEX_PATH=$FAISS_INDEX_PATH DOCUMENTS_DIR=$DOCUMENTS_DIR BATCH_SIZE=$BATCH_SIZE BATCH_WAIT_SECONDS=$BATCH_WAIT_SECONDS python3 node0.py
+
+# if NODE_NUMBER is 1, launch node1.py
+elif [ "$NODE_NUMBER" -eq 1 ]; then
+    echo "Starting pipeline on Node $NODE_NUMBER..."
+    BATCH_SIZE=4  
+    BATCH_WAIT_SECONDS=10    
+    TOTAL_NODES=$TOTAL_NODES NODE_NUMBER=$NODE_NUMBER NODE_0_IP=$NODE_0_IP NODE_1_IP=$NODE_1_IP NODE_2_IP=$NODE_2_IP FAISS_INDEX_PATH=$FAISS_INDEX_PATH DOCUMENTS_DIR=$DOCUMENTS_DIR BATCH_SIZE=$BATCH_SIZE BATCH_WAIT_SECONDS=$BATCH_WAIT_SECONDS python3 node1.py
+
+# if NODE_NUMBER is 2, launch node2.py
+elif [ "$NODE_NUMBER" -eq 2 ]; then
+    echo "Starting pipeline on Node $NODE_NUMBER..."
+    BATCH_SIZE=4  
+    BATCH_WAIT_SECONDS=10    
+    TOTAL_NODES=$TOTAL_NODES NODE_NUMBER=$NODE_NUMBER NODE_0_IP=$NODE_0_IP NODE_1_IP=$NODE_1_IP NODE_2_IP=$NODE_2_IP FAISS_INDEX_PATH=$FAISS_INDEX_PATH DOCUMENTS_DIR=$DOCUMENTS_DIR BATCH_SIZE=$BATCH_SIZE BATCH_WAIT_SECONDS=$BATCH_WAIT_SECONDS python3 node2.py
+else
+    echo "Error: NODE_NUMBER must be 0, 1, or 2."
+fi

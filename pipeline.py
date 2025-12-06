@@ -42,7 +42,7 @@ WORKERS = [NODE_0_IP, NODE_1_IP, NODE_2_IP]
 FAISS_INDEX_PATH = os.environ.get('FAISS_INDEX_PATH', 'faiss_index.bin')
 DOCUMENTS_DIR = os.environ.get('DOCUMENTS_DIR', 'documents/')
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", 4)) 
-BATCH_WAIT_SECONDS = os.environ.get("BATCH_WAIT_SECONDS", 10)
+BATCH_WAIT_SECONDS = os.environ.get("BATCH_WAIT_SECONDS", 0.05)
 
 # Configuration
 CONFIG = {
@@ -88,14 +88,14 @@ class MonolithicPipeline:
     
     def __init__(self):
         # adding metal and cuda support
-        if torch.backends.mps.is_available():
-            device = torch.device("mps")
-        elif torch.cuda.is_available():
-            device = torch.device("cuda")
-        else:
-            device = torch.device("cpu")
-        self.device = device
-        # self.device = torch.device("cpu")
+        # if torch.backends.mps.is_available():
+        #     device = torch.device("mps")
+        # elif torch.cuda.is_available():
+        #     device = torch.device("cuda")
+        # else:
+        #     device = torch.device("cpu")
+        # self.device = device
+        self.device = torch.device("cpu")
         print(f"Initializing pipeline on {self.device}")
         print(f"Node {NODE_NUMBER}/{TOTAL_NODES}")
         print(f"FAISS index path: {CONFIG['faiss_index_path']}")
@@ -270,6 +270,7 @@ class MonolithicPipeline:
             self.llm_model_name,
             dtype=torch.float16,
         ).to(self.device)
+        # model = AutoModelForCausalLM.from_pretrained(self.llm_model_name).to(self.device)
         tokenizer = AutoTokenizer.from_pretrained(self.llm_model_name)
         responses = []
         for query, documents in zip(queries, documents_batch):
@@ -344,7 +345,7 @@ class MonolithicPipeline:
 # Global pipeline instance
 pipeline = None
 
-def worker_dispatcher():
+def worker_dispatcher(worker_index: int):
     """
     Continuously:
       - pull up to BATCH_SIZE requests from request_queue
@@ -378,9 +379,9 @@ def worker_dispatcher():
                 break
 
         # Choose worker in round-robin, **per batch**
-        with worker_counter_lock:
-            worker_index = worker_counter % len(WORKERS)
-            worker_counter += 1
+        # with worker_counter_lock:
+        #     worker_index = worker_counter % len(WORKERS)
+        #     worker_counter += 1
         worker_url = WORKERS[worker_index]
         print("Using worker", worker_index)
 
@@ -584,7 +585,7 @@ def main():
     # print("Worker thread started!")
     if NODE_NUMBER == 0:
         for i in range(TOTAL_NODES):
-            t = threading.Thread(target=worker_dispatcher, daemon=True)
+            t = threading.Thread(target=worker_dispatcher, daemon=True, args=(i,))
             t.start()
         print(f"Started {TOTAL_NODES} dispatcher threads on router node")
     else:

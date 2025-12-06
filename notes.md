@@ -49,22 +49,22 @@ batch_size=4
     Run label        : batch_size=4
 
     === Results ===
-    Elapsed wall time : 1874.299 s
+    Elapsed wall time : 581.345 s
     Total requests    : 100
     Successful        : 100
     Failed            : 0
 
     Throughput:
-    0.05 requests/second
-    3.20 requests/minute
+    0.17 requests/second
+    10.32 requests/minute
 
     Latency (successful requests only):
-    Mean      : 146.868 s
-    Median    : 152.147 s
-    95th pct  : 155.514 s
-    99th pct  : 155.562 s
+    Mean      : 43.642 s
+    Median    : 24.753 s
+    95th pct  : 180.766 s
+    99th pct  : 293.934 s
 
     Peak Memory Usage:
-    Node 0 : mprofile_20251127204100.dat      1.641 MiB
-    Node 1 : mprofile_20251127204111.dat      1.828 MiB
-    Node 2 : mprofile_20251127204112.dat      1.641 MiB
+    Node 0 : 16401.969 MiB
+    Node 1 : 17041.406 MiB
+    Node 2 : 16468.875 MiB

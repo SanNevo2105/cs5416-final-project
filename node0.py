@@ -13,6 +13,7 @@ from flask import Flask, request, jsonify
 from queue import Queue, Empty
 import threading
 import requests
+from dataclasses import asdict
 
 # import shared components from service.py
 from service import TOTAL_NODES, NODE_NUMBER, NODE_0_IP, NODE_1_IP, NODE_2_IP, STEP_TO_NODEIP
@@ -86,7 +87,8 @@ def worker():
         ]   
 
         # Process request
-        responses = pipeline.process_batch(reqs)  
+        responses = pipeline.process_batch(reqs)
+        responses = [asdict(r) for r in responses]
 
         # Prepare HTTP payload for step 2
         payload = {
@@ -181,6 +183,8 @@ def complete():
                 processing_time=res['processing_time']
             )
             results[res['request_id']]['event'].set()
+    
+    return jsonify({}), 200
 
 @app.route('/health', methods=['GET'])
 def health():

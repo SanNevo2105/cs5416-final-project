@@ -12,6 +12,7 @@ from flask import Flask, request, jsonify
 from queue import Queue, Empty
 import threading
 import requests
+from dataclasses import asdict
 
 # import shared components from service.py
 from service import TOTAL_NODES, NODE_NUMBER, NODE_0_IP, NODE_1_IP, NODE_2_IP, STEP_TO_NODEIP
@@ -28,7 +29,6 @@ request_queue = Queue()
 
 # multithreading on node1
 # number of worker threads to run node1 services
-# the number of microservice instances
 THREADS = 3               # TRY DIFFERENT NUMBER OF THREADS!
 
 # Node1 pipeline
@@ -70,7 +70,8 @@ def worker():
                 break
 
         # Process request
-        responses = pipeline.process_batch(batch)  
+        responses = pipeline.process_batch(batch) 
+        responses = [asdict(r) for r in responses] 
 
         # Prepare HTTP payload for next step
         payload = {
@@ -102,7 +103,11 @@ def handle_query():
     """Handle incoming query requests"""
     try:
         data = request.json
-        pipelinedata_requests = data.get('requests')     # a list of PipelineData from previous step
+        pipelinedata_requests = data.get('requests')                                # a list of dict from previous step
+        pipelinedata_requests = [
+            PipelineData(**r) 
+            for r in pipelinedata_requests
+        ]  # convert dict to PipelineData
         
         # put requests to queue
         for pipelinedata in pipelinedata_requests:

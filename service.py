@@ -47,7 +47,7 @@ WORKERS = [NODE_0_IP, NODE_1_IP, NODE_2_IP]
 FAISS_INDEX_PATH = os.environ.get('FAISS_INDEX_PATH', 'faiss_index.bin')
 DOCUMENTS_DIR = os.environ.get('DOCUMENTS_DIR', 'documents/')
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", 4)) 
-BATCH_WAIT_SECONDS = os.environ.get("BATCH_WAIT_SECONDS", 10)
+BATCH_WAIT_SECONDS = int(os.environ.get("BATCH_WAIT_SECONDS", 10))
 
 # Configuration
 CONFIG = {
@@ -107,13 +107,7 @@ class Microservices(ABC):
     Abstract base class for all microservices
     """
     def __init__(self):
-        # adding metal and cuda support
-        if torch.backends.mps.is_available():
-            device = torch.device("mps")
-        elif torch.cuda.is_available():
-            device = torch.device("cuda")
-        else:
-            device = torch.device("cpu")
+        device = torch.device("cpu")
         self.device = device       
 
     @abstractmethod
@@ -132,17 +126,15 @@ class Embedding(Microservices):
         print(f"Node {NODE_NUMBER}/{TOTAL_NODES}")
 
         self.embedding_model_name = 'BAAI/bge-base-en-v1.5'
+        self.model = SentenceTransformer(self.embedding_model_name).to(self.device)
 
     def _generate_embeddings_batch(self, texts: List[str]) -> np.ndarray:
         """Step 1: Generate embeddings for a batch of queries"""
-        model = SentenceTransformer(self.embedding_model_name).to(self.device)
-        embeddings = model.encode(
+        embeddings = self.model.encode(
             texts,
             normalize_embeddings=True,
             convert_to_numpy=True
         )
-        del model
-        gc.collect()
         return embeddings   
 
     def process_batch(self, requests: List[PipelineData]) -> List[PipelineData]:
@@ -176,7 +168,7 @@ class Embedding(Microservices):
                 query=request.query,
                 timestamp=request.timestamp,
                 processing_time=request.processing_time + processing_time,
-                data=query_embeddings[idx]
+                data=query_embeddings[idx].tolist()
             ))
         
         return responses      
@@ -329,12 +321,12 @@ class Reranking(Microservices):
         print(f"Node {NODE_NUMBER}/{TOTAL_NODES}")
 
         self.reranker_model_name = 'BAAI/bge-reranker-base'
+        self.tokenizer = AutoTokenizer.from_pretrained(self.reranker_model_name)
+        self.model = AutoModelForSequenceClassification.from_pretrained(self.reranker_model_name).to(self.device)
+        self.model.eval()
     
     def _rerank_documents_batch(self, queries: List[str], documents_batch: List[List[Dict]]) -> List[List[Dict]]:
         """Step 4: Rerank retrieved documents for each query in the batch"""
-        tokenizer = AutoTokenizer.from_pretrained(self.reranker_model_name)
-        model = AutoModelForSequenceClassification.from_pretrained(self.reranker_model_name).to(self.device)
-        model.eval()
         reranked_batches = []
         for query, documents in zip(queries, documents_batch):
             if not documents:
@@ -342,19 +334,17 @@ class Reranking(Microservices):
                 continue
             pairs = [[query, doc['content']] for doc in documents]
             with torch.no_grad():
-                inputs = tokenizer(
+                inputs = self.tokenizer(
                     pairs,
                     padding=True,
                     truncation=True,
                     return_tensors='pt',
                     max_length=CONFIG['truncate_length']
                 ).to(self.device)
-                scores = model(**inputs, return_dict=True).logits.view(-1, ).float()
+                scores = self.model(**inputs, return_dict=True).logits.view(-1, ).float()
             doc_scores = list(zip(documents, scores))
             doc_scores.sort(key=lambda x: x[1], reverse=True)
             reranked_batches.append([doc for doc, _ in doc_scores])
-        del model, tokenizer
-        gc.collect()
         return reranked_batches
 
     def process_batch(self, requests: List[PipelineData]) -> List[PipelineData]:
@@ -408,14 +398,15 @@ class ResponseGeneration(Microservices):
         print(f"Node {NODE_NUMBER}/{TOTAL_NODES}")
 
         self.llm_model_name = 'Qwen/Qwen2.5-0.5B-Instruct'
-    
-    def _generate_responses_batch(self, queries: List[str], documents_batch: List[List[Dict]]) -> List[str]:
-        """Step 5: Generate LLM responses for each query in the batch"""
-        model = AutoModelForCausalLM.from_pretrained(
+        self.model = AutoModelForCausalLM.from_pretrained(
             self.llm_model_name,
             dtype=torch.float16,
         ).to(self.device)
-        tokenizer = AutoTokenizer.from_pretrained(self.llm_model_name)
+        self.tokenizer = AutoTokenizer.from_pretrained(self.llm_model_name)
+    
+    def _generate_responses_batch(self, queries: List[str], documents_batch: List[List[Dict]]) -> List[str]:
+        """Step 5: Generate LLM responses for each query in the batch"""
+
         responses = []
         for query, documents in zip(queries, documents_batch):
             context = "\n".join([f"- {doc['title']}: {doc['content'][:200]}" for doc in documents[:3]])
@@ -425,25 +416,23 @@ class ResponseGeneration(Microservices):
                 {"role": "user",
                  "content": f"Context:\n{context}\n\nQuestion: {query}\n\nAnswer:"}
             ]
-            text = tokenizer.apply_chat_template(
+            text = self.tokenizer.apply_chat_template(
                 messages,
                 tokenize=False,
                 add_generation_prompt=True
             )
-            model_inputs = tokenizer([text], return_tensors="pt").to(model.device)
-            generated_ids = model.generate(
+            model_inputs = self.tokenizer([text], return_tensors="pt").to(self.model.device)
+            generated_ids = self.model.generate(
                 **model_inputs,
                 max_new_tokens=CONFIG['max_tokens'],
                 temperature=0.01,
-                pad_token_id=tokenizer.eos_token_id
+                pad_token_id=self.tokenizer.eos_token_id
             )
             generated_ids = [
                 output_ids[len(input_ids):] for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)
             ]
-            response = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
+            response = self.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
             responses.append(response)
-        del model, tokenizer
-        gc.collect()
         return responses
     
     def process_batch(self, requests: List[PipelineData]) -> List[PipelineData]:
@@ -497,16 +486,16 @@ class SentimentAnalysis(Microservices):
         print(f"Node {NODE_NUMBER}/{TOTAL_NODES}")
 
         self.sentiment_model_name = 'nlptown/bert-base-multilingual-uncased-sentiment'
-
-    def _analyze_sentiment_batch(self, texts: List[str]) -> List[str]:
-        """Step 7: Analyze sentiment for each generated response"""
-        classifier = hf_pipeline(
+        self.classifier = hf_pipeline(
             "sentiment-analysis",
             model=self.sentiment_model_name,
             device=self.device
         )
+
+    def _analyze_sentiment_batch(self, texts: List[str]) -> List[str]:
+        """Step 7: Analyze sentiment for each generated response"""
         truncated_texts = [text[:CONFIG['truncate_length']] for text in texts]
-        raw_results = classifier(truncated_texts)
+        raw_results = self.classifier(truncated_texts)
         sentiment_map = {
             '1 star': 'very negative',
             '2 stars': 'negative',
@@ -517,8 +506,6 @@ class SentimentAnalysis(Microservices):
         sentiments = []
         for result in raw_results:
             sentiments.append(sentiment_map.get(result['label'], 'neutral'))
-        del classifier
-        gc.collect()
         return sentiments        
     
     def process_batch(self, requests: List[PipelineData]) -> List[PipelineData]:
@@ -569,21 +556,20 @@ class ToxicityDetection(Microservices):
         print(f"Node {NODE_NUMBER}/{TOTAL_NODES}")
 
         self.safety_model_name = 'unitary/toxic-bert'
-
-    def _filter_response_safety_batch(self, texts: List[str]) -> List[bool]:
-        """Step 8: Filter responses for safety for each entry in the batch"""
-        classifier = hf_pipeline(
+        self.classifier = hf_pipeline(
             "text-classification",
             model=self.safety_model_name,
             device=self.device
         )
+
+    def _filter_response_safety_batch(self, texts: List[str]) -> List[bool]:
+        """Step 8: Filter responses for safety for each entry in the batch"""
+
         truncated_texts = [text[:CONFIG['truncate_length']] for text in texts]
-        raw_results = classifier(truncated_texts)
+        raw_results = self.classifier(truncated_texts)
         toxicity_flags = []
         for result in raw_results:
             toxicity_flags.append(result['score'] > 0.5)
-        del classifier
-        gc.collect()
         return toxicity_flags
     
     def process_batch(self, requests: List[PipelineData]) -> List[PipelineData]:
@@ -639,6 +625,9 @@ class FAISS_Retrieval_Reranking(Microservices):
         print("Loading FAISS index into memory once for this process...")
         self.faiss_index = faiss.read_index(CONFIG['faiss_index_path'])
         self.reranker_model_name = 'BAAI/bge-reranker-base'
+        self.tokenizer = AutoTokenizer.from_pretrained(self.reranker_model_name)
+        self.model = AutoModelForSequenceClassification.from_pretrained(self.reranker_model_name).to(self.device)
+        self.model.eval()
 
     def _faiss_search_batch(self, query_embeddings: np.ndarray) -> List[List[int]]:
         """Step 2: Perform FAISS ANN search for a batch of embeddings"""
@@ -681,9 +670,7 @@ class FAISS_Retrieval_Reranking(Microservices):
 
     def _rerank_documents_batch(self, queries: List[str], documents_batch: List[List[Dict]]) -> List[List[Dict]]:
         """Step 4: Rerank retrieved documents for each query in the batch"""
-        tokenizer = AutoTokenizer.from_pretrained(self.reranker_model_name)
-        model = AutoModelForSequenceClassification.from_pretrained(self.reranker_model_name).to(self.device)
-        model.eval()
+
         reranked_batches = []
         for query, documents in zip(queries, documents_batch):
             if not documents:
@@ -691,19 +678,17 @@ class FAISS_Retrieval_Reranking(Microservices):
                 continue
             pairs = [[query, doc['content']] for doc in documents]
             with torch.no_grad():
-                inputs = tokenizer(
+                inputs = self.tokenizer(
                     pairs,
                     padding=True,
                     truncation=True,
                     return_tensors='pt',
                     max_length=CONFIG['truncate_length']
                 ).to(self.device)
-                scores = model(**inputs, return_dict=True).logits.view(-1, ).float()
+                scores = self.model(**inputs, return_dict=True).logits.view(-1, ).float()
             doc_scores = list(zip(documents, scores))
             doc_scores.sort(key=lambda x: x[1], reverse=True)
             reranked_batches.append([doc for doc, _ in doc_scores])
-        del model, tokenizer
-        gc.collect()
         return reranked_batches
 
     def process_batch(self, requests: List[PipelineData]) -> List[PipelineData]:
@@ -743,7 +728,7 @@ class FAISS_Retrieval_Reranking(Microservices):
         responses = []
         for idx, request in enumerate(requests):
             processing_time = time.time() - start_times[idx]
-            print(f"\n✓ Request {request.request_id} reranking processed in {processing_time:.2f} seconds")
+            print(f"\n✓ Request {request.request_id} FAISS, retrieval, reranking processed in {processing_time:.2f} seconds")
             responses.append(PipelineData(
                 request_id=request.request_id,
                 query=request.query,
@@ -767,14 +752,28 @@ class LLM_sentiment_toxicity(Microservices):
         self.llm_model_name = 'Qwen/Qwen2.5-0.5B-Instruct'
         self.sentiment_model_name = 'nlptown/bert-base-multilingual-uncased-sentiment'
         self.safety_model_name = 'unitary/toxic-bert'
-    
-    def _generate_responses_batch(self, queries: List[str], documents_batch: List[List[Dict]]) -> List[str]:
-        """Step 5: Generate LLM responses for each query in the batch"""
-        model = AutoModelForCausalLM.from_pretrained(
+
+        self.llm_model = AutoModelForCausalLM.from_pretrained(
             self.llm_model_name,
             dtype=torch.float16,
         ).to(self.device)
-        tokenizer = AutoTokenizer.from_pretrained(self.llm_model_name)
+        self.llm_tokenizer = AutoTokenizer.from_pretrained(self.llm_model_name)
+
+        self.sentiment_classifier = hf_pipeline(
+            "sentiment-analysis",
+            model=self.sentiment_model_name,
+            device=self.device
+        )
+
+        self.safety_classifier = hf_pipeline(
+            "text-classification",
+            model=self.safety_model_name,
+            device=self.device
+        )
+    
+    def _generate_responses_batch(self, queries: List[str], documents_batch: List[List[Dict]]) -> List[str]:
+        """Step 5: Generate LLM responses for each query in the batch"""
+
         responses = []
         for query, documents in zip(queries, documents_batch):
             context = "\n".join([f"- {doc['title']}: {doc['content'][:200]}" for doc in documents[:3]])
@@ -784,36 +783,29 @@ class LLM_sentiment_toxicity(Microservices):
                 {"role": "user",
                  "content": f"Context:\n{context}\n\nQuestion: {query}\n\nAnswer:"}
             ]
-            text = tokenizer.apply_chat_template(
+            text = self.llm_tokenizer.apply_chat_template(
                 messages,
                 tokenize=False,
                 add_generation_prompt=True
             )
-            model_inputs = tokenizer([text], return_tensors="pt").to(model.device)
-            generated_ids = model.generate(
+            model_inputs = self.llm_tokenizer([text], return_tensors="pt").to(self.llm_model.device)
+            generated_ids = self.llm_model.generate(
                 **model_inputs,
                 max_new_tokens=CONFIG['max_tokens'],
                 temperature=0.01,
-                pad_token_id=tokenizer.eos_token_id
+                pad_token_id=self.llm_tokenizer.eos_token_id
             )
             generated_ids = [
                 output_ids[len(input_ids):] for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)
             ]
-            response = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
+            response = self.llm_tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
             responses.append(response)
-        del model, tokenizer
-        gc.collect()
         return responses
 
     def _analyze_sentiment_batch(self, texts: List[str]) -> List[str]:
-        """Step 7: Analyze sentiment for each generated response"""
-        classifier = hf_pipeline(
-            "sentiment-analysis",
-            model=self.sentiment_model_name,
-            device=self.device
-        )
+        """Step 6: Analyze sentiment for each generated response"""
         truncated_texts = [text[:CONFIG['truncate_length']] for text in texts]
-        raw_results = classifier(truncated_texts)
+        raw_results = self.sentiment_classifier(truncated_texts)
         sentiment_map = {
             '1 star': 'very negative',
             '2 stars': 'negative',
@@ -824,24 +816,16 @@ class LLM_sentiment_toxicity(Microservices):
         sentiments = []
         for result in raw_results:
             sentiments.append(sentiment_map.get(result['label'], 'neutral'))
-        del classifier
-        gc.collect()
         return sentiments         
 
     def _filter_response_safety_batch(self, texts: List[str]) -> List[bool]:
-        """Step 8: Filter responses for safety for each entry in the batch"""
-        classifier = hf_pipeline(
-            "text-classification",
-            model=self.safety_model_name,
-            device=self.device
-        )
+        """Step 7: Filter responses for safety for each entry in the batch"""
+
         truncated_texts = [text[:CONFIG['truncate_length']] for text in texts]
-        raw_results = classifier(truncated_texts)
+        raw_results = self.safety_classifier(truncated_texts)
         toxicity_flags = []
         for result in raw_results:
             toxicity_flags.append(result['score'] > 0.5)
-        del classifier
-        gc.collect()
         return toxicity_flags
 
     def process_batch(self, requests: List[PipelineData]) -> List[PipelineData]:

@@ -5,13 +5,15 @@ Node0 should handle requests from clients and distribute tasks to node1 and node
 
 Microservices on node0:
 - Embedding service: Generate embeddings for queries
+- Sentiment service
+- Toxicity detection service
 """
 
 import json
 import time
 from flask import Flask, request, jsonify
 from queue import Queue, Empty
-import threading
+import multiprocessing
 import requests
 from dataclasses import asdict
 
@@ -28,38 +30,42 @@ from service import (
 from service import WORKERS, CONFIG, BATCH_SIZE, BATCH_WAIT_SECONDS
 from service import FAISS_INDEX_PATH, DOCUMENTS_DIR
 from service import PipelineRequest, PipelineResponse, PipelineData
-from service import Embedding
+from service import data_to_response
+from service import Embedding, SentimentAnalysis, ToxicityDetection
 
 # Flask app
 app = Flask(__name__)
 
 # Initialize LRU Cache
-cache = LRUCache(capacity=100, db_path="lru_cache.db")
+cache = LRUCache(capacity=1000, db_path="lru_cache.db")
 
 # Request queue and results storage
-request_queue = Queue()
-results = (
-    {}
-)  # request_id -> {"event": threading.Event(), "response": PipelineResponse, "count": int (how many requests are waiting for this result)}
-results_lock = threading.Lock()
+request_queue = None
+sentiment_queue = None
+toxicity_queue = None
 
-# multithreading on node0
-# number of worker threads to run embedding service
-THREADS = 3  # TRY DIFFERENT NUMBER OF THREADS!
+manager = multiprocessing.Manager()
+results = manager.dict()  # request_id -> {"event": manager.Event(), "response": PipelineData, "count": int (how many requests are waiting for this result)}
+results_lock = manager.Lock()
 
-# Node0 pipeline
-pipeline = None
+# multiprocessing on node0
+# number of worker processes to run each service
+EMBEDDING_PROCESSES = 1  # TRY DIFFERENT NUMBER OF PROCESSES!
+SENTIMENT_PROCESSES = 1  # TRY DIFFERENT NUMBER OF PROCESSES!
+TOXICITY_PROCESSES = 1  # TRY DIFFERENT NUMBER OF PROCESSES!
 
 
-def worker():
+def embedding_worker(request_queue):
     """
-    worker thread function
+    embedding worker function
 
     Continuously:
       - pull up to BATCH_SIZE requests from request_queue
       - do embedding
       - send to the node with step 2 service
     """
+    pipeline = Embedding()
+
     while True:
         # Block until at least 1 request is available
         req = request_queue.get()
@@ -118,10 +124,110 @@ def worker():
             for _ in batch:
                 print(f"Error processing request: {e}")
 
-        # Mark all batch items as done
-        for _ in batch:
-            request_queue.task_done()
+def sentiment_worker(sentiment_queue):
+    """
+    sentiment worker function
 
+    Continuously:
+      - pull up to BATCH_SIZE requests from sentiment_queue
+      - do sentiment analysis
+    """
+    global results
+    pipeline = SentimentAnalysis()
+
+    while True:
+        # Block until at least 1 request is available
+        req = sentiment_queue.get()
+        if req is None:  # shutdown signal if you want one
+            break
+
+        batch = [req]
+
+        # Try to grab up to BATCH_SIZE-1 more without blocking too long
+        batch_deadline = time.time() + BATCH_WAIT_SECONDS
+        while len(batch) < BATCH_SIZE:
+            remaining = batch_deadline - time.time()
+            if remaining <= 0:
+                break
+            try:
+                # Wait a tiny bit for more requests to form a fuller batch
+                more_req = sentiment_queue.get(timeout=remaining)
+                if more_req is None:
+                    # push back the sentinel for other threads and stop
+                    sentiment_queue.put(None)
+                    break
+                batch.append(more_req)
+            except Empty:
+                break
+
+        # Process request
+        responses = pipeline.process_batch(batch)
+
+        # Update results storage
+        with results_lock:
+            for r in responses:
+                if r.request_id in results:
+                    entry = results[r.request_id]
+                    if entry["response"] is None:
+                        entry["response"] = r
+                        results[r.request_id] = entry
+                    else:
+                        entry["response"].sentiment = r.sentiment
+                        results[r.request_id] = entry
+                        entry["event"].set()
+                    
+
+def toxicity_worker(toxicity_queue):
+    """
+    toxicity worker function
+
+    Continuously:
+      - pull up to BATCH_SIZE requests from toxicity_queue
+      - do toxicity analysis
+    """
+    pipeline = ToxicityDetection()
+
+    while True:
+        # Block until at least 1 request is available
+        req = toxicity_queue.get()
+        if req is None:  # shutdown signal if you want one
+            break
+
+        batch = [req]
+
+        # Try to grab up to BATCH_SIZE-1 more without blocking too long
+        batch_deadline = time.time() + BATCH_WAIT_SECONDS
+        while len(batch) < BATCH_SIZE:
+            remaining = batch_deadline - time.time()
+            if remaining <= 0:
+                break
+            try:
+                # Wait a tiny bit for more requests to form a fuller batch
+                more_req = toxicity_queue.get(timeout=remaining)
+                if more_req is None:
+                    # push back the sentinel for other threads and stop
+                    toxicity_queue.put(None)
+                    break
+                batch.append(more_req)
+            except Empty:
+                break
+
+        # Process request
+        responses = pipeline.process_batch(batch)
+
+        # Update results storage
+        with results_lock:
+            for r in responses:
+                if r.request_id in results:
+                    entry = results[r.request_id]
+                    if entry["response"] is None:
+                        entry["response"] = r
+                        results[r.request_id] = entry
+                    else:
+                        entry["response"].is_toxic = r.is_toxic
+                        results[r.request_id] = entry
+                        entry["event"].set()
+                    
 
 @app.route("/query", methods=["POST"])
 def handle_query():
@@ -151,7 +257,7 @@ def handle_query():
         with results_lock:
             # new request
             if request_id not in results:
-                entry = {"event": threading.Event(), "response": None, "count": 1}
+                entry = {"event": manager.Event(), "response": None, "count": 1}
                 results[request_id] = entry
 
                 # Add to queue
@@ -160,12 +266,15 @@ def handle_query():
 
             # result already exists and is finished
             elif request_id in results and results[request_id]["event"].is_set():
-                return jsonify(entry["response"]), 200
+                pipeline_response = data_to_response(results[request_id]["response"])
+
+                return jsonify(pipeline_response), 200
 
             # result is being processed
             elif request_id in results and not results[request_id]["event"].is_set():
                 entry = results[request_id]
                 entry["count"] += 1
+                results[request_id] = entry
 
         # wait for the result
         timeout = 300  # 5 minutes
@@ -176,12 +285,31 @@ def handle_query():
                 results.pop(request_id, None)
             return jsonify({"error": "Request timed out"}), 504
 
-        # success, return the result
+        # grab a fresh copy of the entry
         with results_lock:
+            entry = results.get(request_id)
+            if not entry or entry["response"] is None:
+                # Something went wrong in the worker; fail gracefully
+                results.pop(request_id, None)
+                return jsonify({"error": "Internal error: response missing"}), 500
+
+            # Update cache
+            cache.set(
+                entry["response"].query,
+                {
+                    "generated_response": entry["response"].generated_response,
+                    "sentiment": entry["response"].sentiment,
+                    "is_toxic": entry["response"].is_toxic,
+                },
+            )
+
+            # success, return the result
             entry["count"] -= 1
             if entry["count"] == 0:
                 results.pop(request_id)
-            return jsonify(entry["response"]), 200
+            else:
+                results[request_id] = entry
+            return jsonify(data_to_response(entry["response"])), 200
 
     except Exception as e:
         print(f"Error in handle_query: {str(e)}")
@@ -190,32 +318,18 @@ def handle_query():
 
 @app.route("/complete", methods=["POST"])
 def complete():
-    """Handle post request from step7 service"""
+    """Handle post request from step5 service"""
     data = request.json
-    reqs_data = data.get("requests", [])  # a list of PipelineData
+    pipelinedata_requests = data.get('requests')                                # a list of dict from previous step
+    pipelinedata_requests = [
+        PipelineData(**r) 
+        for r in pipelinedata_requests
+    ]  # convert dict to PipelineData
 
-    # update results
-    with results_lock:
-        for res in reqs_data:
-            # Update cache
-            if "query" in res:
-                cache.set(
-                    res["query"],
-                    {
-                        "generated_response": res["generated_response"],
-                        "sentiment": res["sentiment"],
-                        "is_toxic": res["is_toxic"],
-                    },
-                )
-
-            results[res["request_id"]]["response"] = PipelineResponse(
-                request_id=res["request_id"],
-                generated_response=res["generated_response"],
-                sentiment=res["sentiment"],
-                is_toxic=res["is_toxic"],
-                processing_time=res["processing_time"],
-            )
-            results[res["request_id"]]["event"].set()
+    # put to sentiment and toxicity queues
+    for pipelinedata in pipelinedata_requests:
+        sentiment_queue.put(pipelinedata)
+        toxicity_queue.put(pipelinedata)
 
     return jsonify({}), 200
 
@@ -235,23 +349,33 @@ def main():
     """
     assert NODE_NUMBER == 0, "This script should be run on node0 only."
 
-    global pipeline
-
     print("=" * 60)
     print("NODE0 SERVER STARTING")
     print("=" * 60)
     print(f"\nRunning on Node {NODE_NUMBER} of {TOTAL_NODES} nodes")
     print(f"Node IPs: 0={NODE_0_IP}, 1={NODE_1_IP}, 2={NODE_2_IP}")
 
-    print("Initializing pipeline...")
-    pipeline = Embedding()
-    print("Pipeline initialized!")
+    # Request queue 
+    global request_queue, sentiment_queue, toxicity_queue
+    request_queue = multiprocessing.Queue()
+    sentiment_queue = multiprocessing.Queue()
+    toxicity_queue = multiprocessing.Queue()
 
-    # Start worker thread
-    for i in range(THREADS):
-        t = threading.Thread(target=worker, daemon=True)
+    # Start worker processes
+    for i in range(EMBEDDING_PROCESSES):
+        t = multiprocessing.Process(target=embedding_worker, args=(request_queue,), daemon=True)
         t.start()
-    print(f"Started {THREADS} worker threads")
+    print(f"Started {EMBEDDING_PROCESSES} worker processes")
+
+    for i in range(SENTIMENT_PROCESSES):
+        t = multiprocessing.Process(target=sentiment_worker, args=(sentiment_queue,), daemon=True)
+        t.start()
+    print(f"Started {SENTIMENT_PROCESSES} sentiment worker processes")
+
+    for i in range(TOXICITY_PROCESSES):
+        t = multiprocessing.Process(target=toxicity_worker, args=(toxicity_queue,), daemon=True)
+        t.start()
+    print(f"Started {TOXICITY_PROCESSES} toxicity worker processes")
 
     hostport = NODE_0_IP
 

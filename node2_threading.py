@@ -3,12 +3,14 @@ Start the server on node2
 
 Microservices on node2:
 - LLM answer generation
+- sentiment analysis
+- toxicity detection
 """
 import json
-import multiprocessing
 import time
 from flask import Flask, request, jsonify
-from queue import Empty
+from queue import Queue, Empty
+import threading
 import requests
 from dataclasses import asdict
 
@@ -17,29 +19,30 @@ from service import TOTAL_NODES, NODE_NUMBER, NODE_0_IP, NODE_1_IP, NODE_2_IP, S
 from service import WORKERS, CONFIG, BATCH_SIZE, BATCH_WAIT_SECONDS
 from service import FAISS_INDEX_PATH, DOCUMENTS_DIR
 from service import PipelineRequest, PipelineResponse, PipelineData
-from service import ResponseGeneration
+from service import LLM_sentiment_toxicity
 
 # Flask app
 app = Flask(__name__)
 
 # Request queue 
-request_queue = multiprocessing.Queue()
+request_queue = Queue()
 
-# multiprocessing on node2
-# number of worker processes to run node2 services
-PROCESSES = 2               # TRY DIFFERENT NUMBER OF PROCESSES!
+# multithreading on node2
+# number of worker threads to run node2 services
+THREADS = 3               # TRY DIFFERENT NUMBER OF THREADS!
+
+# Node2 pipeline
+pipeline = None
 
 def worker():
     """
-    worker function
+    worker thread function
 
     Continuously:
       - pull up to BATCH_SIZE requests from request_queue
       - do node 2 services
       - send result to node 0 to complete the pipeline
     """
-    pipeline = ResponseGeneration()
-
     while True:
         # Block until at least 1 request is available
         req = request_queue.get()
@@ -59,7 +62,7 @@ def worker():
                 # Wait a tiny bit for more requests to form a fuller batch
                 more_req = request_queue.get(timeout=remaining)
                 if more_req is None:
-                    # push back the sentinel for other processes and stop
+                    # push back the sentinel for other threads and stop
                     request_queue.put(None)
                     break
                 batch.append(more_req)
@@ -88,6 +91,10 @@ def worker():
         except Exception as e:
             for _ in batch:
                 print(f"Error processing request: {e}")
+       
+        # Mark all batch items as done
+        for _ in batch:
+            request_queue.task_done()
 
 
 @app.route('/query', methods=['POST'])
@@ -125,17 +132,23 @@ def main():
     """
     assert NODE_NUMBER == 2, "This script should be run on node2 only."
 
+    global pipeline
+
     print("="*60)
     print("NODE2 SERVER STARTING")
     print("="*60)
     print(f"\nRunning on Node {NODE_NUMBER} of {TOTAL_NODES} nodes")
     print(f"Node IPs: 0={NODE_0_IP}, 1={NODE_1_IP}, 2={NODE_2_IP}")
 
-    # Start worker process
-    for i in range(PROCESSES):
-        t = multiprocessing.Process(target=worker, daemon=True)
+    print("Initializing pipeline...")
+    pipeline = LLM_sentiment_toxicity()
+    print("Pipeline initialized!")
+
+    # Start worker thread
+    for i in range(THREADS):
+        t = threading.Thread(target=worker, daemon=True)
         t.start()
-    print(f"Started {PROCESSES} worker processes")
+    print(f"Started {THREADS} worker threads")
 
     hostport = NODE_2_IP
 
@@ -147,4 +160,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

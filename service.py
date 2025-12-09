@@ -102,6 +102,16 @@ class PipelineData():
     processing_time: float = 0.0
     data: Optional[Any] = None        # intermediate outputs from each steps
 
+def data_to_response(data: PipelineData) -> PipelineResponse:
+    """Convert PipelineData to PipelineResponse"""
+    return PipelineResponse(
+        request_id=data.request_id,
+        generated_response=data.generated_response,
+        sentiment=data.sentiment,
+        is_toxic=data.is_toxic,
+        processing_time=data.processing_time
+    )
+
 class Microservices(ABC):
     """
     Abstract base class for all microservices

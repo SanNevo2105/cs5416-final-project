@@ -3,3 +3,5 @@ documents/
 .venv/
 __pycache__/
 test.py
+lru_cache.db
+*.pkl

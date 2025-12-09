@@ -34,7 +34,7 @@ THREADS = 3               # TRY DIFFERENT NUMBER OF THREADS!
 # Node2 pipeline
 pipeline = None
 
-def worker():
+def worker(request_queue):
     """
     worker thread function
 
@@ -100,6 +100,7 @@ def worker():
 @app.route('/query', methods=['POST'])
 def handle_query():
     """Handle incoming query requests"""
+    global request_queue
     try:
         data = request.json
         pipelinedata_requests = data.get('requests')     # a list of PipelineData from previous step
@@ -133,6 +134,7 @@ def main():
     assert NODE_NUMBER == 2, "This script should be run on node2 only."
 
     global pipeline
+    global request_queue
 
     print("="*60)
     print("NODE2 SERVER STARTING")
@@ -146,7 +148,7 @@ def main():
 
     # Start worker thread
     for i in range(THREADS):
-        t = threading.Thread(target=worker, daemon=True)
+        t = threading.Thread(target=worker, daemon=True, args=(request_queue,))
         t.start()
     print(f"Started {THREADS} worker threads")
 

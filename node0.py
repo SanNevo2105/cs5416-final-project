@@ -9,6 +9,7 @@ Microservices on node0:
 - Toxicity detection service
 """
 
+import os
 import json
 import time
 from flask import Flask, request, jsonify
@@ -32,12 +33,13 @@ from service import FAISS_INDEX_PATH, DOCUMENTS_DIR
 from service import PipelineRequest, PipelineResponse, PipelineData
 from service import data_to_response
 from service import Embedding, SentimentAnalysis, ToxicityDetection
+CACHE_CAPACITY = int(os.environ.get("CACHE_CAPACITY", 1000))
 
 # Flask app
 app = Flask(__name__)
 
 # Initialize LRU Cache
-cache = LRUCache(capacity=1000, db_path="lru_cache.db")
+cache = LRUCache(capacity=0, db_path="lru_cache.db")
 
 # Request queue and results storage
 request_queue = None

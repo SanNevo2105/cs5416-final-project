@@ -39,12 +39,12 @@ def worker(request_queue):
       - send result to node 0 to complete the pipeline
     """
     pipeline = ResponseGeneration()
-    print("Node2: initialized ResponseGeneration pipeline")
+    # print("Node2: initialized ResponseGeneration pipeline")
 
     while True:
         # Block until at least 1 request is available
         req = request_queue.get()
-        print("Node2: got request from queue")
+        # print("Node2: got request from queue")
         if req is None:  # shutdown signal if you want one
             break
 
@@ -108,7 +108,7 @@ def handle_query():
 
         # put requests to queue
         for pipelinedata in pipelinedata_requests:
-            print("Node2: putting request to queue")
+            # print("Node2: putting request to queue")
             request_queue.put(pipelinedata)
 
         return jsonify({}), 200

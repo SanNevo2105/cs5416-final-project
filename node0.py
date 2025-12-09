@@ -44,9 +44,12 @@ request_queue = None
 sentiment_queue = None
 toxicity_queue = None
 
-manager = multiprocessing.Manager()
-results = manager.dict()  # request_id -> {"event": manager.Event(), "response": PipelineData, "count": int (how many requests are waiting for this result)}
-results_lock = manager.Lock()
+# manager = multiprocessing.Manager()
+# results = manager.dict()  # request_id -> {"event": manager.Event(), "response": PipelineData, "count": int (how many requests are waiting for this result)}
+# results_lock = manager.Lock()
+results_lock = None
+manager = None
+results = None
 
 # multiprocessing on node0
 # number of worker processes to run each service
@@ -124,7 +127,7 @@ def embedding_worker(request_queue):
             for _ in batch:
                 print(f"Error processing request: {e}")
 
-def sentiment_worker(sentiment_queue):
+def sentiment_worker(sentiment_queue, results, results_lock):
     """
     sentiment worker function
 
@@ -132,7 +135,8 @@ def sentiment_worker(sentiment_queue):
       - pull up to BATCH_SIZE requests from sentiment_queue
       - do sentiment analysis
     """
-    global results
+    # global results
+
     pipeline = SentimentAnalysis()
 
     while True:
@@ -177,7 +181,7 @@ def sentiment_worker(sentiment_queue):
                         entry["event"].set()
                     
 
-def toxicity_worker(toxicity_queue):
+def toxicity_worker(toxicity_queue, results, results_lock):
     """
     toxicity worker function
 
@@ -347,7 +351,14 @@ def main():
     """
     Start the server on node0
     """
+    global manager
+    global results
+    global results_lock
     assert NODE_NUMBER == 0, "This script should be run on node0 only."
+
+    manager = multiprocessing.Manager()
+    results = manager.dict()  # request_id -> {"event": manager.Event(), "response": PipelineData, "count": int (how many requests are waiting for this result)}
+    results_lock = manager.Lock()
 
     print("=" * 60)
     print("NODE0 SERVER STARTING")
@@ -368,12 +379,12 @@ def main():
     print(f"Started {EMBEDDING_PROCESSES} worker processes")
 
     for i in range(SENTIMENT_PROCESSES):
-        t = multiprocessing.Process(target=sentiment_worker, args=(sentiment_queue,), daemon=True)
+        t = multiprocessing.Process(target=sentiment_worker, args=(sentiment_queue, results, results_lock), daemon=True)
         t.start()
     print(f"Started {SENTIMENT_PROCESSES} sentiment worker processes")
 
     for i in range(TOXICITY_PROCESSES):
-        t = multiprocessing.Process(target=toxicity_worker, args=(toxicity_queue,), daemon=True)
+        t = multiprocessing.Process(target=toxicity_worker, args=(toxicity_queue, results, results_lock), daemon=True)
         t.start()
     print(f"Started {TOXICITY_PROCESSES} toxicity worker processes")
 

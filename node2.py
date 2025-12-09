@@ -29,7 +29,7 @@ request_queue = multiprocessing.Queue()
 # number of worker processes to run node2 services
 PROCESSES = 2               # TRY DIFFERENT NUMBER OF PROCESSES!
 
-def worker():
+def worker(request_queue):
     """
     worker function
 
@@ -39,12 +39,16 @@ def worker():
       - send result to node 0 to complete the pipeline
     """
     pipeline = ResponseGeneration()
+    print("Node2: initialized ResponseGeneration pipeline")
 
     while True:
         # Block until at least 1 request is available
         req = request_queue.get()
+        print("Node2: got request from queue")
         if req is None:  # shutdown signal if you want one
             break
+
+        
 
         # a list of PipelineData
         batch = [req]
@@ -93,6 +97,7 @@ def worker():
 @app.route('/query', methods=['POST'])
 def handle_query():
     """Handle incoming query requests"""
+    global request_queue
     try:
         data = request.json
         pipelinedata_requests = data.get('requests')     # a list of PipelineData from previous step
@@ -103,6 +108,7 @@ def handle_query():
 
         # put requests to queue
         for pipelinedata in pipelinedata_requests:
+            print("Node2: putting request to queue")
             request_queue.put(pipelinedata)
 
         return jsonify({}), 200
@@ -123,6 +129,7 @@ def main():
     """
     Start the server on node2
     """
+    global request_queue
     assert NODE_NUMBER == 2, "This script should be run on node2 only."
 
     print("="*60)
@@ -133,7 +140,7 @@ def main():
 
     # Start worker process
     for i in range(PROCESSES):
-        t = multiprocessing.Process(target=worker, daemon=True)
+        t = multiprocessing.Process(target=worker, daemon=True, args=(request_queue,))
         t.start()
     print(f"Started {PROCESSES} worker processes")
 

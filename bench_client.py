@@ -42,6 +42,8 @@ DEFAULT_QUERIES = [
     "I received a damaged item, what should I do?",
 ]
 
+QUERY_DELAY = float(os.environ.get("QUERY_DELAY", 0.05))  # artificial delay per query in seconds
+
 
 def send_request(session: requests.Session, url: str, query: str) -> Tuple[float, bool]:
     """
@@ -83,6 +85,7 @@ def run_benchmark(
     print(f"Benchmarking server: {url}")
     print(f"Total requests   : {num_requests}")
     print(f"Concurrency      : {concurrency}")
+    print(f"Delay            : {QUERY_DELAY} seconds between requests")
     if label:
         print(f"Run label        : {label}")
     batch_size_env = os.environ.get("BATCH_SIZE")
@@ -98,7 +101,7 @@ def run_benchmark(
             print("[Warm-up] WARNING: warm-up request failed; benchmark may be meaningless")
 
     # Actual benchmark
-    print("\nRunning benchmark...")
+    print("\nRunning benchmark with delay of", QUERY_DELAY, "seconds between requests...")
     latencies: List[float] = []
     successes = 0
 
@@ -111,6 +114,7 @@ def run_benchmark(
                 query = DEFAULT_QUERIES[i % len(DEFAULT_QUERIES)]
                 fut = executor.submit(send_request, session, url, query)
                 futures.append(fut)
+                time.sleep(QUERY_DELAY)  # stagger requests slightly
 
             # Collect results
             for fut in concurrent.futures.as_completed(futures):

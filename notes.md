@@ -70,8 +70,8 @@ batch_size=4
     Node 2 : 16468.875 MiB
 
 
-TOTAL_NODES=3 NODE_NUMBER=0 NODE_0_IP=127.0.0.1:5000 NODE_1_IP=127.0.0.1:5001 NODE_2_IP=127.0.0.1:5002 FAISS_INDEX_PATH=faiss_index.bin DOCUMENTS_DIR=documents/ BATCH_SIZE=4 BATCH_WAIT_SECONDS=1 mprof run -o node0_advanced_benchmark.dat python3 node0.py   
+TOTAL_NODES=3 NODE_NUMBER=0 NODE_0_IP=127.0.0.1:5000 NODE_1_IP=127.0.0.1:5001 NODE_2_IP=127.0.0.1:5002 FAISS_INDEX_PATH=faiss_index.bin DOCUMENTS_DIR=documents/ BATCH_SIZE=4 BATCH_WAIT_SECONDS=1 CACHE_CAPACITY=0 mprof run --multiprocess -o node0_advanced_benchmark.dat python3 node0.py   
 
-TOTAL_NODES=3 NODE_NUMBER=1 NODE_0_IP=127.0.0.1:5000 NODE_1_IP=127.0.0.1:5001 NODE_2_IP=127.0.0.1:5002 FAISS_INDEX_PATH=faiss_index.bin DOCUMENTS_DIR=documents/ BATCH_SIZE=4 BATCH_WAIT_SECONDS=1 mprof run -o node1_advanced_benchmark.dat python3 node1.py 
+TOTAL_NODES=3 NODE_NUMBER=1 NODE_0_IP=127.0.0.1:5000 NODE_1_IP=127.0.0.1:5001 NODE_2_IP=127.0.0.1:5002 FAISS_INDEX_PATH=faiss_index.bin DOCUMENTS_DIR=documents/ BATCH_SIZE=4 BATCH_WAIT_SECONDS=1 mprof run --multiprocess -o node1_advanced_benchmark.dat python3 node1.py 
 
-TOTAL_NODES=3 NODE_NUMBER=2 NODE_0_IP=127.0.0.1:5000 NODE_1_IP=127.0.0.1:5001 NODE_2_IP=127.0.0.1:5002 FAISS_INDEX_PATH=faiss_index.bin DOCUMENTS_DIR=documents/ BATCH_SIZE=4 BATCH_WAIT_SECONDS=1 mprof run -o node2_advanced_benchmark.dat python3 node2.py 
+TOTAL_NODES=3 NODE_NUMBER=2 NODE_0_IP=127.0.0.1:5000 NODE_1_IP=127.0.0.1:5001 NODE_2_IP=127.0.0.1:5002 FAISS_INDEX_PATH=faiss_index.bin DOCUMENTS_DIR=documents/ BATCH_SIZE=4 BATCH_WAIT_SECONDS=1 mprof run --multiprocess -o node2_advanced_benchmark.dat python3 node2.py 

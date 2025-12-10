@@ -33,6 +33,9 @@ from service import PipelineRequest, PipelineResponse, PipelineData
 from service import data_to_response
 from service import Embedding, SentimentAnalysis, ToxicityDetection
 
+SENTIMENT_BATCH_SIZE = 2
+TOXICITY_BATCH_SIZE = 2
+
 # Flask app
 app = Flask(__name__)
 
@@ -143,9 +146,9 @@ def sentiment_worker(sentiment_queue):
 
         batch = [req]
 
-        # Try to grab up to BATCH_SIZE-1 more without blocking too long
+        # Try to grab up to SENTIMENT_BATCH_SIZE-1 more without blocking too long
         batch_deadline = time.time() + BATCH_WAIT_SECONDS
-        while len(batch) < BATCH_SIZE:
+        while len(batch) < SENTIMENT_BATCH_SIZE:
             remaining = batch_deadline - time.time()
             if remaining <= 0:
                 break
@@ -195,9 +198,9 @@ def toxicity_worker(toxicity_queue):
 
         batch = [req]
 
-        # Try to grab up to BATCH_SIZE-1 more without blocking too long
+        # Try to grab up to TOXICITY_BATCH_SIZE-1 more without blocking too long
         batch_deadline = time.time() + BATCH_WAIT_SECONDS
-        while len(batch) < BATCH_SIZE:
+        while len(batch) < TOXICITY_BATCH_SIZE:
             remaining = batch_deadline - time.time()
             if remaining <= 0:
                 break

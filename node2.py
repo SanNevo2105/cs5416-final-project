@@ -27,7 +27,7 @@ request_queue = multiprocessing.Queue()
 
 # multiprocessing on node2
 # number of worker processes to run node2 services
-PROCESSES = 2               # TRY DIFFERENT NUMBER OF PROCESSES!
+PROCESSES = 3               # TRY DIFFERENT NUMBER OF PROCESSES!
 
 def worker():
     """
